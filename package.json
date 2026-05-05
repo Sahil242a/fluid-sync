@@ -4,14 +4,13 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node node_modules/vite/bin/vite.js",
     "build": "node node_modules/vite/bin/vite.js build",
     "preview": "node node_modules/vite/bin/vite.js preview"
   },
   "dependencies": {
     "buffer": "^6.0.3",
     "cors": "^2.8.6",
-    "crypto": "^1.0.1",
     "events": "^3.3.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.4.1",
@@ -20,17 +19,21 @@
     "lucide-react": "^1.14.0",
     "multer": "^2.1.1",
     "process": "^0.11.10",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
     "simple-peer": "^9.11.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "stream-browserify": "^3.0.0",
-    "util": "^0.12.5"
+    "util": "^0.12.5",
+    "vite": "^5.4.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite-plugin-node-polyfills": "^0.22.0"
   },
   "devDependencies": {
     "autoprefixer": "^10.5.0",
     "postcss": "^8.5.13",
-    "tailwindcss": "^4.2.4",
-    "vite": "^5.0.0",
-    "vite-plugin-node-polyfills": "^0.26.0"
+    "tailwindcss": "^4.2.4"
   }
 }
