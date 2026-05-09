@@ -1,43 +1,44 @@
 import { useState, useCallback, useRef } from "react";
 
-const CLOUD_NAME    = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
+const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
 const UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET;
-const MAX_SIZE      = 500 * 1024 * 1024;
+const MAX_SIZE = 500 * 1024 * 1024; // 500MB
 
 const BLOCKED_EXTENSIONS = [
-  'exe', 'bat', 'cmd', 'msi', 'sh', 'bash',
-  'ps1', 'vbs', 'jar', 'com', 'scr', 'dll',
-  'reg', 'pif', 'cpl', 'inf'
+  "exe", "bat", "cmd", "msi", "sh", "bash",
+  "ps1", "vbs", "jar", "com", "scr", "dll",
+  "reg", "pif", "cpl", "inf"
 ];
 
 const isBlockedFile = (file) => {
-  const ext = file.name?.split('.').pop()?.toLowerCase() ?? '';
+  const ext = file?.name?.split(".").pop()?.toLowerCase() ?? "";
   return BLOCKED_EXTENSIONS.includes(ext);
 };
 
 export const useCloudUpload = () => {
-  const [uploadProgress,  setUploadProgress]  = useState(0);
-  const [uploadStatus,    setUploadStatus]    = useState("idle");
-  const [uploadError,     setUploadError]     = useState("");
-  const [shareLink,       setShareLink]       = useState("");
-  const [fileInfo,        setFileInfo]        = useState(null);
-  const [currentFileName, setCurrentFileName] = useState("");
-  const [currentFileIdx,  setCurrentFileIdx]  = useState(0);
-  const [totalFiles,      setTotalFiles]      = useState(0);
-  const [downloadData,    setDownloadData]    = useState(null);
-  const [downloadStatus,  setDownloadStatus]  = useState("idle");
-  const [downloadError,   setDownloadError]   = useState("");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatus, setUploadStatus] = useState("idle");
+  const [uploadError, setUploadError] = useState("");
+  const [shareLink, setShareLink] = useState("");
+  const [fileInfo, setFileInfo] = useState(null);
 
-  const xhrRef       = useRef(null);
+  const [currentFileName, setCurrentFileName] = useState("");
+  const [currentFileIdx, setCurrentFileIdx] = useState(0);
+  const [totalFiles, setTotalFiles] = useState(0);
+
+  const [downloadData, setDownloadData] = useState(null);
+  const [downloadStatus, setDownloadStatus] = useState("idle");
+  const [downloadError, setDownloadError] = useState("");
+
+  const xhrRef = useRef(null);
   const cancelledRef = useRef(false);
 
-  // ── Upload a single file via XHR ──────────────────────
-  const uploadSingleFile = (file) =>
-    new Promise((resolve, reject) => {
+  const uploadSingleFile = useCallback((file) => {
+    return new Promise((resolve, reject) => {
       const formData = new FormData();
-      formData.append("file",          file);
+      formData.append("file", file);
       formData.append("upload_preset", UPLOAD_PRESET);
-      formData.append("folder",        "fluidsync");
+      formData.append("folder", "fluidsync");
 
       const xhr = new XMLHttpRequest();
       xhrRef.current = xhr;
@@ -50,7 +51,11 @@ export const useCloudUpload = () => {
 
       xhr.onload = () => {
         if (xhr.status === 200) {
-          resolve(JSON.parse(xhr.responseText));
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch {
+            reject(new Error("Invalid server response"));
+          }
         } else {
           reject(new Error(`Failed: ${xhr.status} - ${xhr.responseText}`));
         }
@@ -65,17 +70,41 @@ export const useCloudUpload = () => {
       );
       xhr.send(formData);
     });
+  }, []);
 
-  // ── Upload multiple files ──────────────────────────────
   const uploadFiles = useCallback(async (files, user) => {
-    if (!files?.length) { setUploadError("No files selected"); return; }
-    if (!user)          { setUploadError("Sign in first");     return; }
+    const fileArray = Array.from(files || []);
 
-    // ✅ Block dangerous file types before anything starts
-    const blockedFiles = files.filter(isBlockedFile);
+    if (!CLOUD_NAME || !UPLOAD_PRESET) {
+      setUploadError("Cloudinary environment variables are missing");
+      setUploadStatus("error");
+      return;
+    }
+
+    if (!fileArray.length) {
+      setUploadError("No files selected");
+      setUploadStatus("error");
+      return;
+    }
+
+    if (!user) {
+      setUploadError("Sign in first");
+      setUploadStatus("error");
+      return;
+    }
+
+    const blockedFiles = fileArray.filter(isBlockedFile);
     if (blockedFiles.length > 0) {
-      const names = blockedFiles.map((f) => f.name).join(', ');
+      const names = blockedFiles.map((f) => f.name).join(", ");
       setUploadError(`File type not allowed: ${names}`);
+      setUploadStatus("error");
+      return;
+    }
+
+    const tooLargeFiles = fileArray.filter((file) => file.size > MAX_SIZE);
+    if (tooLargeFiles.length > 0) {
+      const names = tooLargeFiles.map((f) => f.name).join(", ");
+      setUploadError(`File too large (max 500MB): ${names}`);
       setUploadStatus("error");
       return;
     }
@@ -84,15 +113,17 @@ export const useCloudUpload = () => {
     setUploadStatus("uploading");
     setUploadProgress(0);
     setUploadError("");
-    setTotalFiles(files.length);
+    setTotalFiles(fileArray.length);
+    setFileInfo(null);
+    setShareLink("");
 
     const uploadedFiles = [];
 
     try {
-      for (let i = 0; i < files.length; i++) {
+      for (let i = 0; i < fileArray.length; i++) {
         if (cancelledRef.current) break;
 
-        const file = files[i];
+        const file = fileArray[i];
         setCurrentFileName(file.name);
         setCurrentFileIdx(i + 1);
         setUploadProgress(0);
@@ -102,18 +133,16 @@ export const useCloudUpload = () => {
         uploadedFiles.push({
           name: file.name,
           size: file.size,
-          url:  result.secure_url,
+          url: result.secure_url,
         });
       }
 
-      // User cancelled mid-way
       if (cancelledRef.current) {
         setUploadStatus("idle");
         setUploadProgress(0);
         return;
       }
 
-      // ── Build share link ─────────────────────────────
       setUploadStatus("processing");
 
       const expires = new Date();
@@ -121,24 +150,24 @@ export const useCloudUpload = () => {
 
       const payload = {
         files: uploadedFiles,
-        exp:   expires.toISOString(),
-        by:    user.name || "Anonymous",
+        exp: expires.toISOString(),
+        by: user.name || "Anonymous",
       };
 
       const encoded = btoa(JSON.stringify(payload));
-      const link    = `${window.location.origin}/download/${encoded}`;
+      const link = `${window.location.origin}/download/${encoded}`;
 
       setShareLink(link);
       setFileInfo({
-        count:     uploadedFiles.length,
+        count: uploadedFiles.length,
         totalSize: uploadedFiles.reduce((sum, f) => sum + f.size, 0),
-        files:     uploadedFiles,
-        expires:   expires.toLocaleDateString(),
+        files: uploadedFiles,
+        expires: expires.toLocaleDateString(),
       });
       setUploadStatus("complete");
-
     } catch (err) {
       console.error("Upload error:", err);
+
       if (err.message === "Cancelled") {
         setUploadStatus("idle");
         setUploadProgress(0);
@@ -147,46 +176,64 @@ export const useCloudUpload = () => {
         setUploadStatus("error");
       }
     }
-  }, []);
+  }, [uploadSingleFile]);
 
-  // ── Cancel ────────────────────────────────────────────
   const cancelUpload = useCallback(() => {
     cancelledRef.current = true;
     xhrRef.current?.abort();
     xhrRef.current = null;
+
     setUploadStatus("idle");
     setUploadProgress(0);
+    setCurrentFileName("");
+    setCurrentFileIdx(0);
+    setTotalFiles(0);
   }, []);
 
-  // ── Fetch file info for download page ─────────────────
   const fetchFileInfo = useCallback(async (encoded) => {
     if (!encoded) {
       setDownloadError("Invalid link");
       setDownloadStatus("error");
       return;
     }
+
     try {
       setDownloadStatus("loading");
+
       const decoded = JSON.parse(atob(encoded));
 
-      if (new Date(decoded.exp) < new Date()) {
+      if (decoded.exp && new Date(decoded.exp) < new Date()) {
         setDownloadStatus("expired");
         return;
       }
 
+      // Backward compatible:
+      // supports both new multi-file format and old single-file format
+      const files = Array.isArray(decoded.files) && decoded.files.length > 0
+        ? decoded.files
+        : decoded.url
+          ? [{
+              name: decoded.name || "file",
+              size: decoded.size || 0,
+              url: decoded.url,
+            }]
+          : [];
+
       setDownloadData({
-        files:        decoded.files,
-        uploaderName: decoded.by,
-        expiresAt:    decoded.exp,
+        files,
+        uploaderName: decoded.by || "Anonymous",
+        expiresAt: decoded.exp || null,
+        uploadedAt: decoded.at || null,
       });
+
       setDownloadStatus("ready");
     } catch (e) {
+      console.error("Decode error:", e);
       setDownloadError("Invalid or corrupted link");
       setDownloadStatus("error");
     }
   }, []);
 
-  // ── Reset ─────────────────────────────────────────────
   const reset = useCallback(() => {
     setUploadProgress(0);
     setUploadStatus("idle");
@@ -196,9 +243,13 @@ export const useCloudUpload = () => {
     setCurrentFileName("");
     setCurrentFileIdx(0);
     setTotalFiles(0);
+
     setDownloadData(null);
     setDownloadStatus("idle");
     setDownloadError("");
+
+    cancelledRef.current = false;
+    xhrRef.current = null;
   }, []);
 
   return {
