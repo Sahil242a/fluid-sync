@@ -1,9 +1,9 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Download, FileText, AlertCircle,
-  Clock, User, Loader2, CheckCircle2
+  Clock, User, CheckCircle2, X
 } from 'lucide-react';
 
 // ─── Helpers ───────────────────────────────────────────────
@@ -21,6 +21,7 @@ const getFileColor = (name) => {
   if (['mp4','mkv','avi','mov','webm'].includes(ext))        return 'text-rose-400 bg-rose-500/20';
   if (['mp3','wav','flac','aac'].includes(ext))              return 'text-amber-400 bg-amber-500/20';
   if (['zip','rar','7z','tar'].includes(ext))                return 'text-orange-400 bg-orange-500/20';
+  if (['pdf'].includes(ext))                                 return 'text-red-400 bg-red-500/20';
   return 'text-sky-400 bg-sky-500/20';
 };
 
@@ -28,31 +29,86 @@ const CloudDownload = () => {
   const params  = useParams();
   const encoded = params['*'] || params.encoded || '';
 
-  // ── Decode ─────────────────────────────────────────────
-  let decoded   = null;
-  let decodeErr = null;
+  const [state, setState] = useState('loading');
+  // loading | ready | expired | error
+  const [files,       setFiles]       = useState([]);
+  const [uploader,    setUploader]    = useState('');
+  const [expiresAt,   setExpiresAt]   = useState('');
+  const [errorMsg,    setErrorMsg]    = useState('');
+  const [downloading, setDownloading] = useState({});
 
-  try {
-    decoded = JSON.parse(atob(encoded));
-  } catch (e) {
-    decodeErr = "Invalid or corrupted download link.";
-  }
+  // ── Decode on mount ──────────────────────────────────
+  useEffect(() => {
+    if (!encoded) {
+      setState('error');
+      setErrorMsg('No download link found.');
+      return;
+    }
 
-  // ── Expired check ──────────────────────────────────────
-  const isExpired = decoded ? new Date(decoded.exp) < new Date() : false;
+    try {
+      const decoded = JSON.parse(atob(encoded));
 
-  // ── Derived data ───────────────────────────────────────
-  const files      = decoded?.files     ?? [];
-  const uploader   = decoded?.by        ?? "Anonymous";
-  const expiresAt  = decoded?.exp
-    ? new Date(decoded.exp).toLocaleDateString(undefined, {
-        year: 'numeric', month: 'long', day: 'numeric'
-      })
-    : '';
-  const totalSize  = files.reduce((sum, f) => sum + (f.size ?? 0), 0);
+      console.log('Decoded:', decoded);
 
-  // ── Download a single file ─────────────────────────────
-  const downloadFile = async (file) => {
+      // ── Expired check ──
+      if (decoded.exp && new Date(decoded.exp) < new Date()) {
+        setState('expired');
+        setExpiresAt(
+          new Date(decoded.exp).toLocaleDateString(undefined, {
+            year: 'numeric', month: 'long', day: 'numeric'
+          })
+        );
+        return;
+      }
+
+      // ── Multi-file format ──
+      if (Array.isArray(decoded.files) && decoded.files.length > 0) {
+        setFiles(decoded.files);
+        setUploader(decoded.by || 'Anonymous');
+        setExpiresAt(
+          decoded.exp
+            ? new Date(decoded.exp).toLocaleDateString(undefined, {
+                year: 'numeric', month: 'long', day: 'numeric'
+              })
+            : 'Unknown'
+        );
+        setState('ready');
+        return;
+      }
+
+      // ── Old single-file format (backward compat) ──
+      if (decoded.url) {
+        setFiles([{
+          name: decoded.name || 'file',
+          size: decoded.size || 0,
+          url:  decoded.url,
+        }]);
+        setUploader(decoded.by || 'Anonymous');
+        setExpiresAt(
+          decoded.exp
+            ? new Date(decoded.exp).toLocaleDateString(undefined, {
+                year: 'numeric', month: 'long', day: 'numeric'
+              })
+            : 'Unknown'
+        );
+        setState('ready');
+        return;
+      }
+
+      // ── Nothing valid found ──
+      setState('error');
+      setErrorMsg('No files found in this link.');
+
+    } catch (e) {
+      console.error('Decode error:', e);
+      setState('error');
+      setErrorMsg('Invalid or corrupted download link.');
+    }
+  }, [encoded]);
+
+  // ── Download single file ─────────────────────────────
+  const downloadFile = async (file, index) => {
+    setDownloading(prev => ({ ...prev, [index]: true }));
     try {
       const res  = await fetch(file.url);
       const blob = await res.blob();
@@ -60,50 +116,68 @@ const CloudDownload = () => {
       const a    = document.createElement('a');
       a.href     = url;
       a.download = file.name;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error('Download failed:', err);
-      // Fallback - open in new tab
+      // Fallback - open directly
       window.open(file.url, '_blank');
+    } finally {
+      setDownloading(prev => ({ ...prev, [index]: false }));
     }
   };
 
-  // ── Download all files ─────────────────────────────────
+  // ── Download all ─────────────────────────────────────
   const downloadAll = () => {
     files.forEach((file, i) => {
-      setTimeout(() => downloadFile(file), i * 800);
+      setTimeout(() => downloadFile(file, i), i * 1000);
     });
   };
 
-  // ────────────────────────────────────────────────────────
-  // ── Error State ────────────────────────────────────────
-  // ────────────────────────────────────────────────────────
-  if (decodeErr || (!decoded && !decodeErr)) {
+  const totalSize = files.reduce((sum, f) => sum + (f.size || 0), 0);
+
+  // ────────────────────────────────────────────────────
+  // ── Loading State ────────────────────────────────────
+  // ────────────────────────────────────────────────────
+  if (state === 'loading') {
     return (
-      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center p-4">
-        <div className="text-center space-y-4">
-          <div className="p-6 bg-rose-500/20 rounded-full inline-flex">
-            <AlertCircle size={48} className="text-rose-400" />
-          </div>
-          <h2 className="text-xl font-black uppercase italic text-white">
-            Invalid Link
-          </h2>
-          <p className="text-sm text-slate-500">
-            {decodeErr ?? "This download link is invalid."}
+      <div className="min-h-[100dvh] w-full bg-[#0a0a0f] flex items-center justify-center">
+        <div className="text-center space-y-3">
+          <div className="w-10 h-10 border-2 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-slate-500 text-sm uppercase tracking-widest font-bold">
+            Loading...
           </p>
         </div>
       </div>
     );
   }
 
-  // ── Expired State ──────────────────────────────────────
-  if (isExpired) {
+  // ── Error State ───────────────────────────────────────
+  if (state === 'error') {
     return (
-      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center p-4">
-        <div className="text-center space-y-4">
-          <div className="p-6 bg-amber-500/20 rounded-full inline-flex">
-            <Clock size={48} className="text-amber-400" />
+      <div className="min-h-[100dvh] w-full bg-[#0a0a0f] flex items-center justify-center p-4">
+        <div className="text-center space-y-4 max-w-sm w-full">
+          <div className="p-5 bg-rose-500/20 rounded-full inline-flex">
+            <AlertCircle size={44} className="text-rose-400" />
+          </div>
+          <h2 className="text-xl font-black uppercase italic text-white">
+            Invalid Link
+          </h2>
+          <p className="text-sm text-slate-500">{errorMsg}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Expired State ─────────────────────────────────────
+  if (state === 'expired') {
+    return (
+      <div className="min-h-[100dvh] w-full bg-[#0a0a0f] flex items-center justify-center p-4">
+        <div className="text-center space-y-4 max-w-sm w-full">
+          <div className="p-5 bg-amber-500/20 rounded-full inline-flex">
+            <Clock size={44} className="text-amber-400" />
           </div>
           <h2 className="text-xl font-black uppercase italic text-white">
             Link Expired
@@ -116,53 +190,53 @@ const CloudDownload = () => {
     );
   }
 
-  // ── Ready State ────────────────────────────────────────
+  // ── Ready State ───────────────────────────────────────
   return (
-    <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center p-4">
+    <div className="min-h-[100dvh] w-full bg-[#0a0a0f] flex items-start sm:items-center justify-center p-4 py-8">
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         className="w-full max-w-md space-y-4"
       >
-        {/* Header */}
-        <div className="text-center space-y-1 mb-6">
-          <div className="p-4 bg-emerald-500/20 rounded-full inline-flex mb-3">
+        {/* ── Header ── */}
+        <div className="text-center space-y-2 mb-2">
+          <div className="p-4 bg-emerald-500/20 rounded-full inline-flex mb-2">
             <CheckCircle2 size={36} className="text-emerald-400" />
           </div>
           <h2 className="text-2xl font-black uppercase italic text-white">
             Ready to Download
           </h2>
-          <p className="text-[10px] text-slate-500 uppercase tracking-widest">
+          <p className="text-[11px] text-slate-500 uppercase tracking-widest">
             {files.length} file{files.length > 1 ? 's' : ''} •{' '}
             {formatSize(totalSize)}
           </p>
         </div>
 
-        {/* Meta */}
+        {/* ── Meta ── */}
         <div className="flex items-center justify-between px-1">
-          <div className="flex items-center gap-2 text-[10px] text-slate-500 uppercase tracking-widest">
-            <User size={12} />
+          <div className="flex items-center gap-1.5 text-[10px] text-slate-500 uppercase tracking-widest">
+            <User size={11} />
             <span>{uploader}</span>
           </div>
-          <div className="flex items-center gap-2 text-[10px] text-slate-500 uppercase tracking-widest">
-            <Clock size={12} />
+          <div className="flex items-center gap-1.5 text-[10px] text-slate-500 uppercase tracking-widest">
+            <Clock size={11} />
             <span>Expires {expiresAt}</span>
           </div>
         </div>
 
-        {/* File List */}
-        <div className="space-y-2 max-h-[320px] overflow-y-auto">
+        {/* ── File List ── */}
+        <div className="space-y-2 max-h-[45vh] overflow-y-auto pr-1">
           {files.map((file, i) => (
             <motion.div
               key={i}
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: i * 0.05 }}
-              className="flex items-center gap-3 p-4 bg-white/5 border border-white/10 rounded-2xl"
+              className="flex items-center gap-3 p-3 sm:p-4 bg-white/5 border border-white/10 rounded-2xl"
             >
               {/* Icon */}
-              <div className={`p-2.5 rounded-xl shrink-0 ${getFileColor(file.name)}`}>
-                <FileText size={18} />
+              <div className={`p-2 sm:p-2.5 rounded-xl shrink-0 ${getFileColor(file.name)}`}>
+                <FileText size={16} />
               </div>
 
               {/* Info */}
@@ -177,36 +251,49 @@ const CloudDownload = () => {
 
               {/* Download single */}
               <button
-                onClick={() => downloadFile(file)}
-                className="p-2.5 bg-sky-500/10 border border-sky-500/20 rounded-xl text-sky-400 hover:bg-sky-500/20 transition-all shrink-0"
+                onClick={() => downloadFile(file, i)}
+                disabled={downloading[i]}
+                className="p-2 sm:p-2.5 bg-sky-500/10 border border-sky-500/20 rounded-xl text-sky-400 hover:bg-sky-500/20 transition-all shrink-0 disabled:opacity-50"
               >
-                <Download size={16} />
+                {downloading[i]
+                  ? <div className="w-4 h-4 border-2 border-sky-400 border-t-transparent rounded-full animate-spin" />
+                  : <Download size={15} />
+                }
               </button>
             </motion.div>
           ))}
         </div>
 
-        {/* Download All Button */}
+        {/* ── Download All Button ── */}
         {files.length > 1 && (
           <button
             onClick={downloadAll}
-            className="w-full py-4 bg-purple-500 hover:bg-purple-400 rounded-2xl font-black text-sm uppercase italic text-white flex items-center justify-center gap-3 transition-all shadow-[0_0_30px_rgba(168,85,247,0.3)]"
+            className="w-full py-4 bg-purple-500 hover:bg-purple-400 active:bg-purple-600 rounded-2xl font-black text-sm uppercase italic text-white flex items-center justify-center gap-3 transition-all shadow-[0_0_30px_rgba(168,85,247,0.3)]"
           >
             <Download size={18} />
             Download All {files.length} Files
           </button>
         )}
 
-        {/* Single file big button */}
+        {/* ── Single File Big Button ── */}
         {files.length === 1 && (
           <button
-            onClick={() => downloadFile(files[0])}
-            className="w-full py-4 bg-purple-500 hover:bg-purple-400 rounded-2xl font-black text-sm uppercase italic text-white flex items-center justify-center gap-3 transition-all shadow-[0_0_30px_rgba(168,85,247,0.3)]"
+            onClick={() => downloadFile(files[0], 0)}
+            disabled={downloading[0]}
+            className="w-full py-4 bg-purple-500 hover:bg-purple-400 active:bg-purple-600 rounded-2xl font-black text-sm uppercase italic text-white flex items-center justify-center gap-3 transition-all shadow-[0_0_30px_rgba(168,85,247,0.3)] disabled:opacity-50"
           >
-            <Download size={18} />
-            Download {files[0].name}
+            {downloading[0]
+              ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              : <Download size={18} />
+            }
+            {downloading[0] ? 'Downloading...' : `Download ${files[0].name}`}
           </button>
         )}
+
+        {/* ── Footer ── */}
+        <p className="text-center text-[10px] text-slate-700 font-bold uppercase tracking-widest pt-2">
+          Powered by Fluid Sync
+        </p>
       </motion.div>
     </div>
   );
