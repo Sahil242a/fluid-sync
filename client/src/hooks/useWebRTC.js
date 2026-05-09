@@ -1,54 +1,61 @@
 // client/src/hooks/useWebRTC.js
-import { 
-  useState, useEffect, useRef, useCallback 
-} from 'react';
-import io from 'socket.io-client';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { io } from 'socket.io-client';
 import Peer from 'simple-peer/simplepeer.min.js';
 import { v4 as uuidv4 } from 'uuid';
 
 // ─── Constants ─────────────────────────────────────────────
-const SERVER_URL      = `http://${window.location.hostname}:8080`;
-const CHUNK_SIZE      = 256 * 1024;       // 256KB
-const MAX_BUFFER      = 4 * 1024 * 1024;  // 4MB backpressure
-const HISTORY_LIMIT   = 50;
+const SERVER_URL =
+  import.meta.env.VITE_SERVER_URL ||
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:8080'
+    : 'https://fluid-sync-server.onrender.com');
+
+const CHUNK_SIZE = 256 * 1024;       // 256KB
+const MAX_BUFFER = 4 * 1024 * 1024;   // 4MB backpressure
+const HISTORY_LIMIT = 50;
 
 const ICE_CONFIG = {
   iceServers: [
-    { urls: 'stun:stun.l.google.com:19302'  },
+    { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
   ],
 };
 
 // ─── Size Formatter ────────────────────────────────────────
 const formatSize = (bytes) => {
-  if (!bytes || bytes === 0)        return '0 B';
-  if (bytes < 1024)                 return `${bytes} B`;
-  if (bytes < 1024 * 1024)          return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024)   return `${(bytes / (1024 ** 2)).toFixed(1)} MB`;
+  if (!bytes || bytes === 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 ** 2)).toFixed(1)} MB`;
   return `${(bytes / (1024 ** 3)).toFixed(2)} GB`;
 };
 
 // ─── Hook ──────────────────────────────────────────────────
 export const useWebRTC = () => {
   // ── Connection State ──────────────────────────────────
-  const [roomId,          setRoomId]          = useState('');
+  const [roomId, setRoomId] = useState('');
   const [isPeerConnected, setIsPeerConnected] = useState(false);
-  const [status,          setStatus]          = useState('idle');
+  const [status, setStatus] = useState('idle');
   // idle | waiting | connected | transferring | error
-  const [roomError,       setRoomError]       = useState('');
+  const [roomError, setRoomError] = useState('');
 
   // ── Transfer State ────────────────────────────────────
-  const [fileQueue,          setFileQueue]          = useState([]);
-  const [progress,           setProgress]           = useState(0);
-  const [stats,              setStats]              = useState({ 
-    speed: '0', timeLeft: '0:00 min' 
+  const [fileQueue, setFileQueue] = useState([]);
+  const [progress, setProgress] = useState(0);
+  const [stats, setStats] = useState({
+    speed: '0',
+    timeLeft: '0:00 min',
   });
   const [currentFileDisplay, setCurrentFileDisplay] = useState('');
-  const [currentFileIndex,   setCurrentFileIndex]   = useState(1);
-  const [bytesTransferred,   setBytesTransferred]   = useState(0);
-  const [currentFileSize,    setCurrentFileSize]    = useState(0);
-  const [incomingFile,       setIncomingFile]       = useState({
-    name: '', size: 0, received: 0, buffer: []
+  const [currentFileIndex, setCurrentFileIndex] = useState(1);
+  const [bytesTransferred, setBytesTransferred] = useState(0);
+  const [currentFileSize, setCurrentFileSize] = useState(0);
+  const [incomingFile, setIncomingFile] = useState({
+    name: '',
+    size: 0,
+    received: 0,
+    buffer: [],
   });
   const [sentFileNames, setSentFileNames] = useState([]);
 
@@ -57,43 +64,43 @@ export const useWebRTC = () => {
     try {
       const saved = localStorage.getItem('fluid_sync_history');
       return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
+    } catch {
+      return [];
+    }
   });
 
   // ── Refs ──────────────────────────────────────────────
-  const socketRef   = useRef(null);
-  const peerRef     = useRef(null);
-  const roomIdRef   = useRef('');
-  const cancelRef   = useRef(false);
-  const startTime   = useRef(null);
-  const errorTimer  = useRef(null);
+  const socketRef = useRef(null);
+  const peerRef = useRef(null);
+  const roomIdRef = useRef('');
+  const cancelRef = useRef(false);
+  const startTime = useRef(null);
+  const errorTimer = useRef(null);
 
   // ── Sync roomIdRef ────────────────────────────────────
-  useEffect(() => { 
-    roomIdRef.current = roomId; 
+  useEffect(() => {
+    roomIdRef.current = roomId;
   }, [roomId]);
 
   // ── Sync History to localStorage ──────────────────────
   useEffect(() => {
-    localStorage.setItem(
-      'fluid_sync_history', 
-      JSON.stringify(history)
-    );
+    localStorage.setItem('fluid_sync_history', JSON.stringify(history));
   }, [history]);
 
   // ── History Logger ────────────────────────────────────
   const logToHistory = useCallback((name, size, type) => {
     const entry = {
-      id:        uuidv4(),
+      id: uuidv4(),
       name,
-      size:      formatSize(size),
+      size: formatSize(size),
       type,
-      timestamp: new Date().toLocaleTimeString([], { 
-        hour: '2-digit', minute: '2-digit' 
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
       }),
       date: new Date().toLocaleDateString(),
     };
-    setHistory(prev => [entry, ...prev].slice(0, HISTORY_LIMIT));
+    setHistory((prev) => [entry, ...prev].slice(0, HISTORY_LIMIT));
   }, []);
 
   // ── Stats Updater ─────────────────────────────────────
@@ -102,13 +109,13 @@ export const useWebRTC = () => {
     if (elapsed < 0.5) return;
 
     const speedBytes = bytesProcessed / elapsed;
-    const speedMBps  = speedBytes / (1024 * 1024);
-    const remaining  = Math.max(0, (totalSize - bytesProcessed) / speedBytes);
-    const mins       = Math.floor(remaining / 60);
-    const secs       = Math.floor(remaining % 60);
+    const speedMBps = speedBytes / (1024 * 1024);
+    const remaining = Math.max(0, (totalSize - bytesProcessed) / speedBytes);
+    const mins = Math.floor(remaining / 60);
+    const secs = Math.floor(remaining % 60);
 
     setStats({
-      speed:    speedMBps.toFixed(2),
+      speed: speedMBps.toFixed(2),
       timeLeft: `${mins}:${secs < 10 ? '0' : ''}${secs} min`,
     });
 
@@ -124,11 +131,11 @@ export const useWebRTC = () => {
       const decoded = new TextDecoder().decode(data);
       if (decoded.startsWith('{"type":"metadata"')) {
         const meta = JSON.parse(decoded);
-        setIncomingFile({ 
-          name:     meta.name, 
-          size:     meta.size, 
-          received: 0, 
-          buffer:   [] 
+        setIncomingFile({
+          name: meta.name,
+          size: meta.size,
+          received: 0,
+          buffer: [],
         });
         setCurrentFileDisplay(meta.name);
         setCurrentFileSize(meta.size);
@@ -137,14 +144,16 @@ export const useWebRTC = () => {
         startTime.current = Date.now();
         return;
       }
-    } catch (_) { /* binary chunk */ }
+    } catch (_) {
+      // binary chunk
+    }
 
     // Handle binary chunk
-    setIncomingFile(prev => {
+    setIncomingFile((prev) => {
       if (!prev.name || cancelRef.current) return prev;
 
       const newReceived = prev.received + data.byteLength;
-      const newBuffer   = [...prev.buffer, data];
+      const newBuffer = [...prev.buffer, data];
 
       updateStats(newReceived, prev.size);
       setProgress(Math.round((newReceived / prev.size) * 100));
@@ -152,9 +161,9 @@ export const useWebRTC = () => {
       // ── Transfer Complete ──
       if (newReceived >= prev.size) {
         const blob = new Blob(newBuffer);
-        const url  = URL.createObjectURL(blob);
-        const a    = document.createElement('a');
-        a.href     = url;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
         a.download = prev.name;
         document.body.appendChild(a);
         a.click();
@@ -184,7 +193,7 @@ export const useWebRTC = () => {
     const peer = new Peer({
       initiator,
       trickle: true,
-      config:  ICE_CONFIG,
+      config: ICE_CONFIG,
     });
 
     peer.on('signal', (data) => {
@@ -255,20 +264,28 @@ export const useWebRTC = () => {
   // ── Socket Initialization ─────────────────────────────
   useEffect(() => {
     const socket = io(SERVER_URL, {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
       reconnectionAttempts: 5,
-      reconnectionDelay:    1000,
-      transports:           ['websocket'],
+      reconnectionDelay: 1000,
+      timeout: 20000,
+      secure: true,
     });
 
     socketRef.current = socket;
 
     socket.on('connect', () => {
       console.log('✅ Socket connected:', socket.id);
+      setRoomError('');
     });
 
     socket.on('connect_error', (err) => {
       console.error('❌ Socket error:', err.message);
-      setRoomError('Cannot reach server');
+      setRoomError(
+        import.meta.env.PROD
+          ? 'Cannot reach server. Please check backend deployment.'
+          : 'Cannot reach server'
+      );
     });
 
     return () => {
@@ -319,24 +336,27 @@ export const useWebRTC = () => {
       createPeer(false);
     };
 
-    socket.on('user-joined',       onUserJoined);
-    socket.on('signal',            onSignal);
-    socket.on('room-full',         onRoomFull);
-    socket.on('room-joined',       onRoomJoined);
+    socket.on('user-joined', onUserJoined);
+    socket.on('signal', onSignal);
+    socket.on('room-full', onRoomFull);
+    socket.on('room-joined', onRoomJoined);
     socket.on('peer-disconnected', onPeerDisconnected);
 
     return () => {
-      socket.off('user-joined',       onUserJoined);
-      socket.off('signal',            onSignal);
-      socket.off('room-full',         onRoomFull);
-      socket.off('room-joined',       onRoomJoined);
+      socket.off('user-joined', onUserJoined);
+      socket.off('signal', onSignal);
+      socket.off('room-full', onRoomFull);
+      socket.off('room-joined', onRoomJoined);
       socket.off('peer-disconnected', onPeerDisconnected);
     };
   }, [roomId, createPeer, forceReset]);
 
   // ── Room Handlers ─────────────────────────────────────
   const initializeRoom = useCallback((user, setActiveTab) => {
-    if (!user) { setActiveTab('Settings'); return; }
+    if (!user) {
+      setActiveTab('Settings');
+      return;
+    }
     const id = uuidv4().split('-')[0];
     setRoomId(id);
     setRoomError('');
@@ -356,8 +376,8 @@ export const useWebRTC = () => {
     if (!fileQueue.length || !peerRef.current || !isPeerConnected) return;
 
     setStatus('transferring');
-    cancelRef.current  = false;
-    startTime.current  = Date.now();
+    cancelRef.current = false;
+    startTime.current = Date.now();
     setSentFileNames([]);
 
     for (let i = 0; i < fileQueue.length; i++) {
@@ -373,14 +393,14 @@ export const useWebRTC = () => {
 
       // Send metadata
       peerRef.current.send(JSON.stringify({
-        type:     'metadata',
-        name:     file.name,
-        size:     file.size,
+        type: 'metadata',
+        name: file.name,
+        size: file.size,
         mimeType: file.type,
       }));
 
       // Small delay for metadata to arrive
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 100));
 
       let offset = 0;
 
@@ -390,12 +410,12 @@ export const useWebRTC = () => {
 
         // Backpressure check
         if (peerRef.current._channel?.bufferedAmount > MAX_BUFFER) {
-          await new Promise(r => setTimeout(r, 50));
+          await new Promise((r) => setTimeout(r, 50));
           continue;
         }
 
-        const slice  = file.slice(offset, offset + CHUNK_SIZE);
-        const chunk  = await slice.arrayBuffer();
+        const slice = file.slice(offset, offset + CHUNK_SIZE);
+        const chunk = await slice.arrayBuffer();
 
         peerRef.current.send(chunk);
         offset += chunk.byteLength;
@@ -406,7 +426,7 @@ export const useWebRTC = () => {
 
       if (!cancelRef.current) {
         logToHistory(file.name, file.size, 'SENT');
-        setSentFileNames(prev => [...prev, file.name]);
+        setSentFileNames((prev) => [...prev, file.name]);
       }
     }
 
